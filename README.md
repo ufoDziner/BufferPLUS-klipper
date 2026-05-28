@@ -5,10 +5,21 @@ Complete Klipper configuration for the Mellow LLL Filament Plus Buffer with auto
 > **Note:** This is the Klipper configuration. For the Buffer Plus firmware source code, see the [main repository README](../README.md).
 
 # Revisions 
-1/12/2026 - Updated config to use extra_stepper and force moves instead of the second extruder setup.  
-            This avoids a few conflicts and allows the motor to be synced to the extruder  
-            Added filament runout switch logic.  
-            Can be enabled or disabled with Enable_Filament_Runout or Disable_Filament_Runout    
+1/12/2026 (@ThaatGuy): 
+- Updated config to use extra_stepper and force moves instead of the second extruder setup.  
+- This avoids a few conflicts and allows the motor to be synced to the extruder  
+- Added filament runout switch logic.  
+- ~~Can be enabled or disabled with Enable_Filament_Runout or Disable_Filament_Runout.~~
+
+28-May-2026 (@ufoDziner):
+
+- Updated config with ```sense_resistor: 0.150``` to work with Kalico.  
+- Runout sensor can be enabled or disabled with Enable_Runout_Sensor or Disable_Runout_Sensor.
+- Runout calls M600.
+- Corrected and updated calibration math.
+- Added note for overdriving.
+                                    
+
 
 ## Features
 
@@ -16,7 +27,7 @@ Complete Klipper configuration for the Mellow LLL Filament Plus Buffer with auto
 - ✅ **Smart Feed Bursts** - HALL2 sensor triggers small feed bursts during printing
 - ✅ **Overfill Protection** - HALL1 prevents buffer from jamming into extruder
 - ✅ **Manual Feed/Retract** - Physical buttons for manual filament loading
-- ✅ **Filament Runout Detection** - Optional pause on filament runout
+- ✅ **Filament Runout Detection** - Optional M600/PAUSE on filament runout
 
 ## Hardware Setup
 
@@ -287,36 +298,26 @@ make
 
 ## Configuration Tuning
 
-### Adjust Feed Burst Amount
-Change the burst size in `_BUFFER_FEED_BURST` macro:
+### Adjust Feed Burst Amount (DISTANCE) and or Feed Speed (VELOCITY) if necessary
+Change the burst size and/or speed in `_BUFFER_FEED_BURST` macro:
 ```cfg
 [gcode_macro _BUFFER_FEED_BURST]
 gcode:
     {% if printer["gcode_macro _BUFFER_AUTO_CONTROL"].overfill_lock == 0 %}
-        ACTIVATE_EXTRUDER EXTRUDER=extruder1
-        M83
-        G1 E15 F3000  # ← Change E15 to desired burst amount (mm)
+        FORCE_MOVE STEPPER="extruder_stepper mellow" DISTANCE=15 VELOCITY=15 ACCEL=1000
         M118 Buffer: Feed burst complete
+    {% else %}
+        M118 Buffer: Burst cancelled due to overfill lock
     {% endif %}
 ```
-
-### Adjust Feed Speed
-Change feed/retract speed (currently 3000 mm/min = 50 mm/s):
-```cfg
-G1 E10 F3000  # Change F3000 to desired speed (mm/min)
-```
-
-Common speeds:
-- `F1800` = 30 mm/s (slower, more reliable)
-- `F3000` = 50 mm/s (default)
-- `F6000` = 100 mm/s (faster, may skip)
 
 ### Motor Current
 Adjust TMC2208 current if motor is too weak or overheating:
 ```cfg
-[tmc2208 extruder1]
+[tmc2208 extruder_stepper mellow]
 uart_pin: LLL_PLUS:PB1
-run_current: 0.35  # Increase up to 0.5 if motor skips, decrease to 0.25 if overheating
+sense_resistor: 0.150
+run_current: 0.300  # Increase up to 0.5 if motor skips, decrease to 0.25 if overheating
 stealthchop_threshold: 999999
 ```
 
@@ -324,35 +325,86 @@ stealthchop_threshold: 999999
 
 To calibrate your buffer motor for accurate feeding:
 
-1. **Mark the filament** 120mm from the entrance sensor
-2. **Heat your hotend** (if min_extrude_temp is set)
-3. **Activate the buffer extruder:**
+1. **Load filament in buffer** so that a small amount is exposed on the exit side.
+
+2. **Mark the filament** near the base of the sensor exit for easy measurement.
+
+3. **Ensure FORCE_MOVE is active** somewhere in your printer.cfg (if using klipper instead of Kalico):
    ```
-   ACTIVATE_EXTRUDER EXTRUDER=extruder1
+   [force_move]
+   enable_force_move: True
    ```
+
 4. **Feed 100mm:**
+
    ```
-   M83
-   G1 E100 F300
+   FORCE_MOVE STEPPER="extruder_stepper mellow" DISTANCE=100 VELOCITY=5 ACCEL=300
    ```
+
 5. **Measure** the actual distance the mark moved
-6. **Calculate new rotation distance:**
+
+6. **Calculate the compensation factor**
+
    ```
-   new_rotation_distance = current_rotation_distance * (100 / actual_distance_moved)
+   actual_distance_moved / 100
    ```
-   
+
    Example: If mark moved 95mm instead of 100mm:
+
    ```
-   new_rotation_distance = 18.86 * (100 / 95) = 19.85
+   compensation_factor = 95 / 100 = 0.95
    ```
 
-7. **Update config:**
-   ```cfg
-   [extruder1]
-   rotation_distance: 19.85  # Your calculated value
+7. **Calculate new rotation distance:**
+
+   ```
+   new_rotation_distance = compensation_factor * current_rotation_distance
    ```
 
-8. **Restart and test again** until accurate
+   Example:
+
+   ```
+   new_rotation_distance = 0.95 * 18.86 = 17.92 
+   ```
+
+8. **Restart, mark filament again and measure** distance should = 100mm.
+
+   ```
+   FIRMWARE_RESTART
+   FORCE_MOVE STEPPER="extruder_stepper mellow" DISTANCE=100 VELOCITY=5 ACCEL=300
+   ```
+
+9. If not, reset the rotation distance to 18.86, restart the firmware and start the test over.
+
+   ```
+   FIRMWARE_RESTART
+   ```
+
+10. **Add 3% feed increase**
+
+    ```
+    17.92 / 1.05 = 17.07
+    ```
+
+11. **Restart, mark filament again and measure** distance should = 103mm
+    ```
+    FIRMWARE_RESTART
+    FORCE_MOVE STEPPER="extruder_stepper mellow" DISTANCE=100 VELOCITY=5 ACCEL=300
+    ```
+
+12. **Update config:**
+    
+    ```cfg
+    [extruder_stepper mellow]
+    rotation_distance: 17.39  # Your calculated value
+    ```
+    
+    
+15. **Restart and test again** if necessary.
+
+> [!CAUTION]
+>
+> Do not under supply the extruder. It is better to have the buffer overdriven (providing 3%-5% more filament than the extruder is using) than underdriven.  The buffer handles over supply seemslessly, but undersupply causes the buffer to sit a state that it cannot escape.
 
 ---
 
@@ -455,6 +507,8 @@ No need to open the case or press BOOT buttons! 🎉
 ## Credits
 
 Klipper configuration developed by [@ss1gohan13](https://github.com/ss1gohan13) for the Mellow LLL Filament Plus Buffer.
+
+Updated klipper version by [@ThaatGuy] (https://github.com/ThaatGuy-COTS)
 
 Hardware and original firmware by [Mellow 3D](https://github.com/mellow-3d).
 
